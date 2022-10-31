@@ -7,6 +7,7 @@ import ast
 import requests
 import aiohttp
 import asyncio
+import aiofiles
 from fake_useragent import UserAgent
 # import yadisk
 
@@ -98,6 +99,25 @@ def get_folder_with_last_date(folders_to_check):
     return None
 
 
+def changing_files_local_links(new_files_url, cam_name):
+    new_files_data = []
+    for file_url_data in new_files_url:
+        file_data = dict()
+        for element in file_url_data:
+            if type(element) == type(dict()):
+                file_data['load_href'] = element['href']
+            else:
+                file_data['local_href'] = element
+        new_files_data.append(file_data)
+
+    new_files_data = [{'load_href': file_data['load_href'],
+                       'local_href': folder_with_cams +
+                                     file_data['local_href'].replace('%2F', '/').split(folder_with_cams_on_disk)[
+                                         -1].replace(cam_name, camera_dict[cam_name]).split('&')[0]}
+                      for file_data in new_files_data]
+    return new_files_data
+
+
 def commented(text):
     def inner(func):
         def wrapper(*arg):
@@ -146,9 +166,12 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
 
     # с помощью get запроса получаем url на добавление файлов
     new_files_url = asyncio.run(get_files_urls(urls_files_to_load, headers))
-    new_files_url = [data['href'] for data in new_files_url]
 
+    # добавляем к созданным ссылкам на загрузку ссылки на локальный путь к файлу
+    new_files_data = changing_files_local_links(new_files_url, cam_name)
 
+    # загружаем файлы на диск (1-я ссылка - url загрузки, 2-я на диск)
+    asyncio.run(upload_files(new_files_data, headers))
 
 
 
@@ -163,34 +186,88 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
     #
 
 
-async def read_url(session, url):
-    async with session.get(url) as resp:
-        return await resp.json()
+# async def get_operations_info(operations, headers):
+#     tasks = []
+#     async with aiohttp.ClientSession(headers=headers) as async_session:
+#         for operation in operations:
+#             task = asyncio.create_task(get_file_url(async_session, f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={file}&overwrite=false'))
+#             tasks.append(task)
+#         camera_files = await asyncio.gather(*tasks)
+#         return camera_files
+
+
+
+async def upload_file(session, url, data):
+    async with aiofiles.open(data, mode='rb') as f:
+        file_data = await f.read()
+
+    async with session.put(url, data=file_data) as r:
+        print('upload_file  -->' + str(r.status))
+        print(url)
+        if str(r.status)[0] != '2':
+            script_info['errors'].append({'upload_file': r.status,
+                                          'url': url})
+
+async def upload_files(urls_data, headers):
+    tasks = []
+    async with aiohttp.ClientSession(headers=headers) as async_session:
+        for data in urls_data:
+            task = asyncio.create_task(upload_file(async_session, data['load_href'], data['local_href']))
+            tasks.append(task)
+        await asyncio.gather(*tasks)
+
+
+async def get_file_url(session, url):
+    async with session.get(url) as r:
+        # print('get_file_url -->' + str(r.status))
+        # print(url)
+        if str(r.status)[0] != '2':
+            script_info['errors'].append({'get_file_url': r.status,
+                                          'url': url})
+        return await r.json(), url
 
 
 async def get_files_urls(camera_files, headers):
     tasks = []
-    camera_files = camera_files
     async with aiohttp.ClientSession(headers=headers) as async_session:
         for file in camera_files:
-            tasks.append(asyncio.create_task(read_url(async_session, f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={file}&overwrite=false')))
+            task = asyncio.create_task(get_file_url(async_session, f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={file}&overwrite=false'))
+            tasks.append(task)
         camera_files = await asyncio.gather(*tasks)
         return camera_files
 
 
-async def put_url(session, url):
+async def put_folder_url(session, url):
     async with session.put(url) as r:
-        pass
-
+        # print('put_folder_url  -->' + str(r.status))
+        # print(url)
+        if str(r.status)[0] != '2':
+            script_info['errors'].append({'put_folder_url': r.status,
+                                          'url': url})
 
 async def create_folders(folders, headers):
     tasks = []
-    folders = folders
     async with aiohttp.ClientSession(headers=headers) as async_session:
         for folder in folders:
-            tasks.append(asyncio.create_task(put_url(async_session, f'https://cloud-api.yandex.net/v1/disk/resources?path={folder}')))
+            tasks.append(asyncio.create_task(put_folder_url(async_session, f'https://cloud-api.yandex.net/v1/disk/resources?path={folder}')))
         return await asyncio.gather(*tasks)
 
+
+async def put_file_url(session, url):
+    async with session.put(url) as r:
+        print('put_file_url  -->' + str(r.status))
+        print(url)
+        # if str(r.status)[0] != '2':
+        #     script_info['errors'].append({'put_folder_url': r.status,
+        #                                   'url': url})
+
+
+async def create_files(files_url, headers):
+    tasks = []
+    async with aiohttp.ClientSession(headers=headers) as async_session:
+        for file_url in files_url:
+            tasks.append(asyncio.create_task(put_file_url(async_session, file_url)))
+        return await asyncio.gather(*tasks)
 
 
 
