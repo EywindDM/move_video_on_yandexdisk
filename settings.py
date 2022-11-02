@@ -16,8 +16,7 @@ script_info = {'date': None,
                'errors': [],
                'is_success': False,
                'cameras': None,
-               'storage disk usage': None,
-               'free space on disk': None,
+               'free_space_on_disk': None,
                'script_time_work': None
                }
 
@@ -28,10 +27,11 @@ camera_dict = {'кабинет': '607ea49ecea6',
                'двор': '607ea49f34af'
                }
 
-cameras_to_write_on_disk = ['кабинет', ]
-# cameras_to_write_on_disk = ['парадная', 'кабинет', 'детская', 'мастерская', 'двор']
+# cameras_to_write_on_disk = ['детская', ]
+cameras_to_write_on_disk = ['парадная', 'кабинет', 'детская', 'мастерская', 'двор']
 
 logging_file = '/home/dmitry/python_projects/move_video_on_yandexdisk/log/loggin_file.json'
+loggin_data_len = 1000
 
 # days to keep data in storage
 storage_date = 30

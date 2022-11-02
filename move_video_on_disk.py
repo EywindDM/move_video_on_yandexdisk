@@ -1,6 +1,7 @@
 import re
 import time
 import datetime
+import json
 
 import requests
 import aiohttp
@@ -50,7 +51,7 @@ def find_all_files_on_pc_to_load(folder_with_cams):
 
 def get_folder_with_last_date(folders_to_check):
     if folders_to_check:
-        text_to_date = [datetime.datetime.strptime(folder.split('/')[-1], "%Y%m%d%H") for folder in folders_to_check]
+        text_to_date = [datetime.datetime.strptime(folder, "%Y%m%d%H") for folder in folders_to_check]
         sorted_folders_to_check = [x for _, x in sorted(zip(text_to_date, folders_to_check))]
         return sorted_folders_to_check[-1]
     return None
@@ -59,19 +60,28 @@ def get_folder_with_last_date(folders_to_check):
 def changing_files_local_links(new_files_url, cam_name):
     new_files_data = []
     for file_url_data in new_files_url:
+        # print(file_url_data)
+        # print(len(file_url_data))
         file_data = dict()
         for element in file_url_data:
             if type(element) == type(dict()):
-                file_data['load_href'] = element['href']
+                try:
+                    file_data['load_href'] = element['href']
+                except Exception as err:
+                    # ресурс на загрузку уже существует
+                    break
             else:
                 file_data['local_href'] = element
-        new_files_data.append(file_data)
+        if file_data:
+            if len(file_data) == 2:
+                new_files_data.append(file_data)
 
-    new_files_data = [{'load_href': file_data['load_href'],
-                       'local_href': folder_with_cams +
-                                     file_data['local_href'].replace('%2F', '/').split(folder_with_cams_on_disk)[
-                                         -1].replace(cam_name, camera_dict[cam_name]).split('&')[0]}
-                      for file_data in new_files_data]
+    if new_files_data:
+        new_files_data = [{'load_href': file_data['load_href'],
+                           'local_href': folder_with_cams +
+                                         file_data['local_href'].replace('%2F', '/').split(folder_with_cams_on_disk)[
+                                             -1].replace(cam_name, camera_dict[cam_name]).split('&')[0]}
+                          for file_data in new_files_data]
     return new_files_data
 
 
@@ -95,6 +105,8 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
     limit = str(storage_date * 24)
     r = session.get(f'https://cloud-api.yandex.net/v1/disk/resources?path={camera_url}&type=dir&limit={limit}&fields=_embedded.items.path')
     exsisted_folders_on_disk = [val for folder in r.json()['_embedded']['items'] for key, val in folder.items()]
+    exsisted_folders_on_disk = [folder.split('/')[-1] for folder in exsisted_folders_on_disk]
+
 
     # нужно найти последнюю созданную папку на диске, чтобы проверить не нужно ли догрузить в нее файлы
     last_folder = get_folder_with_last_date(exsisted_folders_on_disk)
@@ -103,9 +115,10 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
     camera_files_to_load = [file for file in allfiles if re.search(camera_dict[cam_name], file) is not None]
 
     # смотрим все папки камеры на локальной машине и проверяем нет ли их на диске, если нет то добавляем в list на создание
-    camera_new_folders = set([file.split('/')[-2] for file in camera_files_to_load if file.split('/')[-2] not in camera_files_to_load])
-    camera_new_dirs_path = [camera_url + '/' + folder for folder in camera_new_folders]
-    camera_new_dirs_path = [folder.replace('/', '%2F') for folder in camera_new_dirs_path]
+    camera_new_folders = set([file.split('/')[-2] for file in camera_files_to_load if file.split('/')[-2] not in exsisted_folders_on_disk])
+    if camera_new_folders:
+        camera_new_dirs_path = [camera_url + '/' + folder for folder in camera_new_folders]
+        camera_new_dirs_path = [folder.replace('/', '%2F') for folder in camera_new_dirs_path]
 
     # добавляем последнюю папку на диске в список новых
     camera_new_folders = list(camera_new_folders)
@@ -117,17 +130,23 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
     urls_files_to_load = [file.split('/share')[-1].replace(folder_with_cams.split('/')[-1], folder_with_cams_on_disk) for file in camera_files_to_load]
     urls_files_to_load = [file.replace(camera_dict[cam_name], cam_name).replace('/', '%2F') for file in urls_files_to_load]
 
-    # создаем папки на диске
-    asyncio.run(create_folders(camera_new_dirs_path, headers))
+    if len(camera_new_folders) > 1:
+        # создаем папки на диске
+        asyncio.run(create_folders(camera_new_dirs_path, headers))
 
     # с помощью get запроса получаем url на добавление файлов
     new_files_url = asyncio.run(get_files_urls(urls_files_to_load, headers))
+    # print(new_files_url)
+    # print(len(new_files_url))
 
     # добавляем к созданным ссылкам на загрузку ссылки на локальный путь к файлу
     new_files_data = changing_files_local_links(new_files_url, cam_name)
+    # print(new_files_data)
+    # print(len(new_files_data))
 
-    # загружаем файлы на диск (1-я ссылка - url загрузки, 2-я на диск)
-    asyncio.run(upload_files(new_files_data, headers))
+    if new_files_data:
+        # загружаем файлы на диск (1-я ссылка - url загрузки, 2-я на диск)
+        asyncio.run(upload_files(new_files_data, headers))
 
     # удаляем устаревшие папки с файлами
     date_to_delete = (datetime.datetime.today() - datetime.timedelta(days=storage_date))
@@ -146,9 +165,11 @@ async def upload_file(session, url, data):
                                           'url': url})
         return r.status
 
+
 async def upload_files(urls_data, headers):
     tasks = []
-    async with aiohttp.ClientSession(headers=headers) as async_session:
+    timeout = aiohttp.ClientTimeout(total=1000)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as async_session:
         for data in urls_data:
             tasks.append(asyncio.create_task(upload_file(async_session, data['load_href'], data['local_href'])))
         status_codes = await asyncio.gather(*tasks)
@@ -161,9 +182,11 @@ async def get_file_url(session, url):
     async with session.get(url) as r:
         # print('get_file_url -->' + str(r.status))
         # print(url)
-        if str(r.status)[0] != '2':
+        if str(r.status)[0] != '2' and str(r.status) != '409':
             script_info['errors'].append({'get_file_url': r.status,
                                           'url': url})
+
+        # if str(r.status)[0] == '2':
         return await r.json(), url, r.status
 
 
@@ -173,7 +196,7 @@ async def get_files_urls(camera_files, headers):
         for file in camera_files:
             tasks.append(asyncio.create_task(get_file_url(async_session, f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={file}&overwrite=false')))
         camera_files = await asyncio.gather(*tasks)
-        status_codes = [file[-1] for file in camera_files if str(file[-1])[0] == 2]
+        status_codes = [file[-1] for file in camera_files if str(file[-1])[0] == '2']
         camera_files = [(file[0], file[1]) for file in camera_files]
 
         print(str(len(status_codes)) + ' links to create file received')
@@ -188,6 +211,7 @@ async def put_folder_url(session, url):
         if str(r.status)[0] != '2':
             script_info['errors'].append({'put_folder_url': r.status, 'url': url})
         return r.status
+
 
 async def create_folders(folders, headers):
     tasks = []
@@ -207,6 +231,7 @@ async def delete_folder_url(session, url):
             script_info['errors'].append({'put_folder_url': r.status, 'url': url})
         return r.status
 
+
 async def delete_folders(folders, headers):
     tasks = []
     async with aiohttp.ClientSession(headers=headers) as async_session:
@@ -219,12 +244,37 @@ async def delete_folders(folders, headers):
         # return await asyncio.gather(*tasks)
 
 
+def write_changes_on_file(script_info):
+    with open(logging_file, 'r', encoding='utf-8') as f:
+        data_dict = json.load(f)
+        f.close()
+
+    if data_dict:
+        data_dict['data'].append(script_info)
+        data_dict['len'] = len(data_dict['data'])
+
+        if len(data_dict['data']) > loggin_data_len:
+            data_dict['data'] = data_dict['data'][(len(data_dict['data']) - loggin_data_len):]
+
+        with open(logging_file, 'w', encoding='utf-8') as f:
+            json.dump(data_dict, f, ensure_ascii=False)
+            f.close()
+
+
+def get_disk_info(session):
+    r = session.get('https://cloud-api.yandex.net/v1/disk/')
+    try:
+        free_space = round((r.json()['total_space'] - r.json()['used_space']) / 1024**3, 2)
+    except KeyError:
+        free_space = None
+
+    script_info['free_space_on_disk'] = free_space
+    print('free space on disk --> ', free_space)
+
+
 if __name__ == '__main__':
     start_time = time.time()
     script_info['cameras'] = cameras_to_write_on_disk
-
-    # print(app_client_id)
-    # print(token)
 
     files_to_load = find_all_files_on_pc_to_load(folder_with_cams)
 
@@ -245,15 +295,18 @@ if __name__ == '__main__':
             if key in cameras_to_write_on_disk:
                 upload_data_from_camera(key, files_to_load, session, headers)
 
+        script_info['is_success'] = True
     except Exception as err:
         print('SCRIP CRUSHED  --->' + str(err))
-        script_info['errors'].append({'SCRIP CRUSHED': err})
+        script_info['errors'].append({'SCRIP CRUSHED': str(err)})
+        # script_info['is_success'] = False
 
-
-
-
-
-
+    script_info['date'] = datetime.datetime.today().strftime('%d-%m-%Y---%H:%M')
+    script_info['script_time_work'] = time.time() - start_time
+    get_disk_info(session)
+    session.close()
+    write_changes_on_file(script_info)
+    print('script work time --> ', time.time() - start_time)
 
 
 
