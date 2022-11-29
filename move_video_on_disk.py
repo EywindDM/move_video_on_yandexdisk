@@ -107,7 +107,6 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
     exsisted_folders_on_disk = [val for folder in r.json()['_embedded']['items'] for key, val in folder.items()]
     exsisted_folders_on_disk = [folder.split('/')[-1] for folder in exsisted_folders_on_disk]
 
-
     # нужно найти последнюю созданную папку на диске, чтобы проверить не нужно ли догрузить в нее файлы
     last_folder = get_folder_with_last_date(exsisted_folders_on_disk)
 
@@ -151,6 +150,8 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
     # удаляем устаревшие папки с файлами
     date_to_delete = (datetime.datetime.today() - datetime.timedelta(days=storage_date))
     folders_to_delete = [folder for folder in exsisted_folders_on_disk if datetime.datetime.strptime(folder.split('/')[-1], '%Y%m%d%H') < date_to_delete]
+    folders_to_delete = ['/' + folder_with_cams_on_disk + '/' + cam_name + '/' + folder for folder in folders_to_delete]
+    print(folders_to_delete)
     asyncio.run(delete_folders(folders_to_delete, headers))
 
 
