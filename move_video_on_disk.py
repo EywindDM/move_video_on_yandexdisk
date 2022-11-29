@@ -151,7 +151,6 @@ def upload_data_from_camera(cam_name, allfiles, session, headers):
     date_to_delete = (datetime.datetime.today() - datetime.timedelta(days=storage_date))
     folders_to_delete = [folder for folder in exsisted_folders_on_disk if datetime.datetime.strptime(folder.split('/')[-1], '%Y%m%d%H') < date_to_delete]
     folders_to_delete = ['/' + folder_with_cams_on_disk + '/' + cam_name + '/' + folder for folder in folders_to_delete]
-    print(folders_to_delete)
     asyncio.run(delete_folders(folders_to_delete, headers))
 
 
